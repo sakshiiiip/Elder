@@ -240,7 +240,7 @@ class GeminiScreenAnalysisService : ScreenAnalysisService {
             goalLower.contains("doctor") || goalLower.contains("appointment") ->
                 "To book a doctor appointment, open Sahaay and tap Doctor Booking."
             else ->
-                "I'm not sure which option you mean. Please tell me the button or field name you would like to use."
+                "I couldn't find that option. Please try again."
         }
 
         return if (matched != null) {

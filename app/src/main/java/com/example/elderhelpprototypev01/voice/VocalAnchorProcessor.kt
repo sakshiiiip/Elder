@@ -31,39 +31,57 @@ object VocalAnchorProcessor {
 
     private val REPEAT_PATTERNS = setOf(
         "repeat",
+        "repeat that",
+        "say again",
+        "say that again",
         "फिर से बोलो",
         "phir se bolo",
         "dobara bolo",
         "again",
-        "ek baar aur"
+        "ek baar aur",
+        "aur ek baar"
     )
 
     private val GO_BACK_PATTERNS = setOf(
         "go back",
+        "navigate back",
+        "take me back",
         "पीछे जाओ",
         "peeche jao",
         "wapas jao",
+        "wapas chalo",
         "wapas",
         "back jao"
     )
 
     private val STOP_PATTERNS = setOf(
         "stop",
+        "cancel",
+        "dismiss",
         "रुको",
         "ruko",
+        "ruk jao",
         "band karo",
+        "khatam karo",
         "chup",
         "bas"
     )
 
     private val NEXT_STEP_PATTERNS = setOf(
         "what should i do next",
+        "what do i do next",
+        "what should i do",
+        "what to do next",
+        "what next",
+        "tell me next step",
         "अब क्या करना है",
         "ab kya karna hai",
         "next step",
         "aage kya karna hai",
         "aage kya",
         "ab kya",
+        "agla step",
+        "agla kadam",
         "next"
     )
 

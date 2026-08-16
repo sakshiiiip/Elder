@@ -209,10 +209,55 @@ class ScreenAssistantEngine(private val context: Context) {
                 return@launch
             }
 
+            // 1b. Check System Vocal Anchors first
+            val anchor = com.example.elderhelpprototypev01.voice.VocalAnchorProcessor.detect(userGoal)
+            if (anchor != null) {
+                when (anchor) {
+                    com.example.elderhelpprototypev01.model.VocalAnchorAction.REPEAT -> {
+                        val lastRes = _lastResult.value
+                        if (lastRes != null && !lastRes.isError) {
+                            ttsManager.speak(lastRes.spokenResponse, force = true)
+                            if (lastRes.targetElementId != null || lastRes.targetElementText != null) {
+                                val promptIdx = lastRes.targetElementId?.removePrefix("e")?.toIntOrNull() ?: -1
+                                showHighlightWithFreshBounds(
+                                    service = service,
+                                    result = lastRes,
+                                    promptIndex = promptIdx,
+                                    userGoal = userGoal,
+                                    source = "REPEAT_CMD"
+                                )
+                            }
+                        } else {
+                            ttsManager.speak("There is no previous instruction to repeat. Please tell me what you would like to do.", force = true)
+                        }
+                        _isAnalyzing.value = false
+                        return@launch
+                    }
+                    com.example.elderhelpprototypev01.model.VocalAnchorAction.GO_BACK -> {
+                        clearHighlight()
+                        val navigated = SahaayAccessibilityService.performGlobalBack()
+                        val msg = if (navigated) "Going back." else "Please press the back button on your device to go back."
+                        ttsManager.speak(msg, force = true)
+                        _isAnalyzing.value = false
+                        return@launch
+                    }
+                    com.example.elderhelpprototypev01.model.VocalAnchorAction.STOP -> {
+                        clearHighlight()
+                        stopSpeaking()
+                        _isAnalyzing.value = false
+                        return@launch
+                    }
+                    com.example.elderhelpprototypev01.model.VocalAnchorAction.NEXT_STEP -> {
+                        // Continue to auto-analyze next step
+                    }
+                }
+            }
+
             // 2. CAPTURE current screen context
             val screenContext = service.captureCurrentScreenContext()
             if (screenContext == null || screenContext.elements.isEmpty()) {
-                val msg = "I can't clearly see elements on this screen. Please open an app screen."
+                val msg = "I couldn't find that option. Please try again."
+                clearHighlight()
                 ttsManager.speak(msg, force = true)
                 _lastResult.value = ScreenAnalysisResult.noMatch(msg)
                 _isAnalyzing.value = false
@@ -242,7 +287,6 @@ class ScreenAssistantEngine(private val context: Context) {
                 )
                 _lastResult.value = result
                 if (targetEl != null && targetEl.bounds.width() > 0) {
-                    // Fresh bounds for safety highlight
                     val freshBounds = service.findFreshBoundsForElement(
                         promptIndex = targetEl.promptIndex,
                         fallbackText = sensitiveField ?: ""
@@ -257,18 +301,15 @@ class ScreenAssistantEngine(private val context: Context) {
                 return@launch
             }
 
-            // 2c. FINGERPRINT CHECK: Skip API call if screen hasn't changed
-            // Bug 3 Fix: On cache hit, we still return the cached SEMANTIC result,
-            // but we ALWAYS re-fetch fresh bounds before drawing the highlight.
+            // 2c. FINGERPRINT CHECK: Skip API call if screen hasn't changed on "What next"
             val fingerprint = screenContext.toFingerprint()
             if (fingerprint == lastScreenFingerprint && lastCachedResult != null
-                && userGoal == "What should I do next?"
+                && (userGoal == "What should I do next?" || userGoal == "next step")
             ) {
                 val cached = lastCachedResult!!
                 _lastResult.value = cached
                 ttsManager.speak(cached.spokenResponse, force = true)
 
-                // Re-fetch fresh bounds even on cache hit
                 if (cached.targetElementId != null || cached.targetElementText != null) {
                     val promptIdx = cached.targetElementId?.removePrefix("e")?.toIntOrNull() ?: -1
                     showHighlightWithFreshBounds(
@@ -285,10 +326,48 @@ class ScreenAssistantEngine(private val context: Context) {
 
             // 3. Add user's goal to conversation history
             conversationHistory.add(ConversationMessage(role = MessageRole.USER, text = userGoal))
-
-            // Cap conversation history to prevent unbounded token growth
             if (conversationHistory.size > 8) {
                 conversationHistory.subList(0, conversationHistory.size - 8).clear()
+            }
+
+            // 3a. MODULAR TARGET DETECTION (UiNodeTargetDetector): Direct voice action targeting
+            val directTarget = com.example.elderhelpprototypev01.accessibility.UiNodeTargetDetector.findTarget(userGoal, screenContext)
+            if (directTarget != null) {
+                val label = directTarget.label.ifBlank { "option" }
+                val spoken = if (directTarget.editable) "Please type in the $label field." else "Please tap $label."
+                val directResult = ScreenAnalysisResult(
+                    responseType = "NEXT_STEP",
+                    spokenResponse = spoken,
+                    visualResponse = if (directTarget.editable) "Type $label" else "Tap $label",
+                    targetElementId = directTarget.promptId,
+                    targetElementText = label,
+                    targetElementBounds = directTarget.bounds,
+                    actionGuidance = if (directTarget.editable) "TYPE" else "TAP",
+                    explanation = spoken,
+                    reason = "Direct action matched by UiNodeTargetDetector",
+                    confidence = 0.95f,
+                    actionType = "GUIDE_HIGHLIGHT"
+                )
+
+                _lastResult.value = directResult
+                lastScreenFingerprint = fingerprint
+                lastCachedResult = directResult
+
+                conversationHistory.add(
+                    ConversationMessage(role = MessageRole.ASSISTANT, text = spoken)
+                )
+
+                showHighlightWithFreshBounds(
+                    service = service,
+                    result = directResult,
+                    promptIndex = directTarget.promptIndex,
+                    userGoal = userGoal,
+                    source = "DIRECT_TARGET_DETECTOR"
+                )
+
+                ttsManager.speak(spoken, force = true)
+                _isAnalyzing.value = false
+                return@launch
             }
 
             // 3b. LOCAL-FIRST BYPASS: If local matcher confidently resolves the goal, skip API
@@ -320,7 +399,7 @@ class ScreenAssistantEngine(private val context: Context) {
                             localMatch.editable ->
                                 "Type in the highlighted $label field."
                             else ->
-                                "Tap the highlighted $label option."
+                                "Please tap $label."
                         }
                     }
                     val localResult = ScreenAnalysisResult(
@@ -329,7 +408,7 @@ class ScreenAssistantEngine(private val context: Context) {
                         visualResponse = if (localMatch.editable) "Type $label" else "Tap $label",
                         targetElementId = localMatch.promptId,
                         targetElementText = label,
-                        targetElementBounds = localMatch.bounds, // snapshot — will be freshened below
+                        targetElementBounds = localMatch.bounds,
                         actionGuidance = if (localMatch.editable) "TYPE" else "TAP",
                         explanation = spoken,
                         reason = "Matched locally without API call",
@@ -345,7 +424,6 @@ class ScreenAssistantEngine(private val context: Context) {
                         ConversationMessage(role = MessageRole.ASSISTANT, text = spoken)
                     )
 
-                    // Bug 3 Fix: Use fresh bounds even for local match
                     showHighlightWithFreshBounds(
                         service = service,
                         result = localResult,
@@ -370,9 +448,8 @@ class ScreenAssistantEngine(private val context: Context) {
                     taskState = taskState
                 )
             } catch (e: Exception) {
-                ScreenAnalysisResult.error(
-                    "I'm having trouble analyzing the screen right now. Please try again."
-                )
+                val notFoundMsg = "I couldn't find that option. Please try again."
+                ScreenAnalysisResult.noMatch(notFoundMsg)
             }
 
             _lastResult.value = result
@@ -380,30 +457,37 @@ class ScreenAssistantEngine(private val context: Context) {
             lastCachedResult = result
 
             if (!result.isError) {
-                conversationHistory.add(
-                    ConversationMessage(role = MessageRole.ASSISTANT, text = result.spokenResponse)
-                )
-
-                // 5. HIGHLIGHT target element ONLY if confidence is high (>= 0.60f) AND a target was identified
-                if (result.confidence < 0.60f || result.actionType == "NO_MATCH") {
-                    val clarificationMsg = "I'm not sure which option you mean. Please tell me the button or field name you would like to use."
-                    ttsManager.speak(clarificationMsg, force = true)
-                    _lastResult.value = result.copy(spokenResponse = clarificationMsg, responseType = "CLARIFICATION")
+                // 5. Check if target was identified with good confidence
+                if (result.confidence < 0.60f || result.actionType == "NO_MATCH" || (result.targetElementId == null && result.targetElementText == null)) {
+                    val notFoundMsg = "I couldn't find that option. Please try again."
+                    clearHighlight()
+                    ttsManager.speak(notFoundMsg, force = true)
+                    _lastResult.value = result.copy(spokenResponse = notFoundMsg, responseType = "CLARIFICATION", actionType = "NO_MATCH")
+                    conversationHistory.add(
+                        ConversationMessage(role = MessageRole.ASSISTANT, text = notFoundMsg)
+                    )
                     _isAnalyzing.value = false
                     return@launch
                 }
 
-                if (result.targetElementId != null || result.targetElementText != null) {
-                    val promptIdx = result.targetElementId?.removePrefix("e")?.toIntOrNull() ?: -1
-                    // Bug 3 Fix: Always fetch fresh bounds from live accessibility tree
-                    showHighlightWithFreshBounds(
-                        service = service,
-                        result = result,
-                        promptIndex = promptIdx,
-                        userGoal = userGoal,
-                        source = "GEMINI"
-                    )
-                }
+                conversationHistory.add(
+                    ConversationMessage(role = MessageRole.ASSISTANT, text = result.spokenResponse)
+                )
+
+                val promptIdx = result.targetElementId?.removePrefix("e")?.toIntOrNull() ?: -1
+                showHighlightWithFreshBounds(
+                    service = service,
+                    result = result,
+                    promptIndex = promptIdx,
+                    userGoal = userGoal,
+                    source = "GEMINI"
+                )
+            } else {
+                val notFoundMsg = "I couldn't find that option. Please try again."
+                clearHighlight()
+                ttsManager.speak(notFoundMsg, force = true)
+                _isAnalyzing.value = false
+                return@launch
             }
 
             // 6. SPEAK response aloud via TTS

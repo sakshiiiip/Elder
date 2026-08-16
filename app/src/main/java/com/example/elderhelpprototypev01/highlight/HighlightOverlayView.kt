@@ -109,13 +109,8 @@ class HighlightOverlayView(
 
         val rawRect = RectF(data.bounds)
         if (rawRect.isEmpty || rawRect.width() <= 0 || rawRect.height() <= 0) {
-            // Fallback to screen center region if bounds are non-positive
-            rawRect.set(
-                width / 5f,
-                height / 3.2f,
-                4 * width / 5f,
-                height / 3.2f + 140f * density
-            )
+            // Never guess coordinates or draw random rectangles if target bounds are invalid
+            return
         }
 
         val padding = 4f * density

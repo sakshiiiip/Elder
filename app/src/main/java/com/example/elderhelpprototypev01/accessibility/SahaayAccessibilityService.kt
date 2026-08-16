@@ -52,6 +52,10 @@ class SahaayAccessibilityService : AccessibilityService() {
             ) ?: return false
             return prefString.contains(context.packageName)
         }
+
+        fun performGlobalBack(): Boolean {
+            return _instance?.performGlobalAction(GLOBAL_ACTION_BACK) ?: false
+        }
     }
 
     override fun onServiceConnected() {
